@@ -1,6 +1,6 @@
 [project]
 name = "claude-kanban"
-version = "0.2.1"
+version = "0.2.2"
 description = "A real-time kanban dashboard for monitoring Claude Code sessions across multiple servers"
 readme = "README.md"
 license = "MIT"
