@@ -763,16 +763,20 @@ def _summarize_all(sessions):
 
         if cached and cached.get("messageCount") == mc:
             s["aiSummary"] = cached["summary"]
-        elif sid not in _summarize_in_flight and mc > 0:
-            _summarize_in_flight.add(sid)
-            session_data = {
-                "sessionId": sid,
-                "cwd": s.get("cwd", ""),
-                "alive": s.get("alive", False),
-                "conversationExcerpt": s.get("conversationExcerpt", []),
-            }
-            fut = _summarize_executor.submit(_summarize_session, session_data)
-            fut.add_done_callback(lambda f, sid=sid, mc=mc: _on_summary_done(sid, mc, f))
+        else:
+            # Keep the old summary visible while regenerating
+            if cached:
+                s["aiSummary"] = cached["summary"]
+            if sid not in _summarize_in_flight and mc > 0:
+                _summarize_in_flight.add(sid)
+                session_data = {
+                    "sessionId": sid,
+                    "cwd": s.get("cwd", ""),
+                    "alive": s.get("alive", False),
+                    "conversationExcerpt": s.get("conversationExcerpt", []),
+                }
+                fut = _summarize_executor.submit(_summarize_session, session_data)
+                fut.add_done_callback(lambda f, sid=sid, mc=mc: _on_summary_done(sid, mc, f))
 
 
 @app.route("/api/sessions")
