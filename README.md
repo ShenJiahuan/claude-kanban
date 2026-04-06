@@ -31,6 +31,13 @@ If you run Claude Code on multiple machines simultaneously, it's easy to lose tr
 uvx claude-kanban
 ```
 
+### Install with pip
+
+```bash
+pip install claude-kanban
+claude-kanban
+```
+
 ### Run from source
 
 ```bash
