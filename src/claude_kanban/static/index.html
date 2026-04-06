@@ -298,6 +298,19 @@
     50% { opacity: 1; }
   }
 
+  .btn-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: 8px;
+    border-radius: 4px;
+    line-height: 1;
+  }
+  .btn-dismiss:hover { color: var(--red); background: rgba(248,81,73,0.15); }
+
   .error-card { border-left: 3px solid var(--red); }
   .error-card .card-task { border-left-color: var(--red); color: var(--red); }
 
@@ -621,7 +634,7 @@ function renderSummary(session) {
     </div>`;
 }
 
-function renderCard(session, isError) {
+function renderCard(session, isError, showDismiss) {
   if (isError) {
     return `
       <div class="card error-card">
@@ -632,11 +645,14 @@ function renderCard(session, isError) {
       </div>`;
   }
   const alive = session.alive;
+  const dismissBtn = showDismiss
+    ? `<button class="btn-dismiss" onclick="dismissSession('${session.sessionId}')" title="Dismiss">&times;</button>`
+    : '';
   return `
     <div class="card">
       <div class="card-top">
         <span class="card-server">${escapeHtml(session.server || 'unknown')}</span>
-        <span class="card-pid">${alive ? '<span class="pulse"></span> ' : ''}PID ${session.pid || '?'}</span>
+        <span class="card-pid">${alive ? '<span class="pulse"></span> ' : ''}PID ${session.pid || '?'}${dismissBtn}</span>
       </div>
       <div class="card-project">${escapeHtml(session.project || 'unknown')}</div>
       <div class="card-cwd">${escapeHtml(session.cwd || '')}</div>
@@ -648,6 +664,15 @@ function renderCard(session, isError) {
         <span>${session.kind || ''}</span>
       </div>
     </div>`;
+}
+
+async function dismissSession(sessionId) {
+  try {
+    await fetch(`/api/sessions/${sessionId}/dismiss`, { method: 'POST' });
+    render(false);
+  } catch (e) {
+    console.error('Dismiss failed:', e);
+  }
 }
 
 async function fetchSessions(force) {
@@ -687,7 +712,7 @@ async function render(force) {
     running.length ? running.map(s => renderCard(s, false)).join('') : '<div class="empty-state">No running agents</div>';
 
   document.getElementById('col-completed').innerHTML =
-    completed.length ? completed.map(s => renderCard(s, false)).join('') : '<div class="empty-state">No completed sessions</div>';
+    completed.length ? completed.map(s => renderCard(s, false, true)).join('') : '<div class="empty-state">No completed sessions</div>';
 
   document.getElementById('col-errors').innerHTML =
     errors.length ? errors.map(s => renderCard(s, true)).join('') : '<div class="empty-state">All servers connected</div>';

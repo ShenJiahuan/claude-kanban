@@ -787,6 +787,16 @@ def api_sessions():
     })
 
 
+@app.route("/api/sessions/<session_id>/dismiss", methods=["POST"])
+def api_session_dismiss(session_id):
+    """Remove a completed session from the board."""
+    with _known_sessions["lock"]:
+        if session_id in _known_sessions["completed"]:
+            del _known_sessions["completed"][session_id]
+            return jsonify({"ok": True})
+    return jsonify({"error": "Session not found in completed"}), 404
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Claude Code Agent Kanban")
