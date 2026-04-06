@@ -41,7 +41,7 @@ claude-kanban
 ### Run from source
 
 ```bash
-git clone https://github.com/madsys-dev/claude-kanban.git
+git clone https://github.com/ShenJiahuan/claude-kanban.git
 cd claude-kanban
 uv run claude-kanban
 ```
