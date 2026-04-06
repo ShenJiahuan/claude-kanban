@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Agent Kanban</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  header h1 .logo {
+    width: 28px;
+    height: 28px;
+    background: var(--accent);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: #fff;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: var(--border); }
+  .btn.loading { opacity: 0.5; pointer-events: none; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #4090e0; }
+  .btn-danger { color: var(--red); }
+  .btn-danger:hover { background: rgba(248,81,73,0.15); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+  .board {
+    display: flex;
+    gap: 20px;
+    padding: 24px;
+    min-height: calc(100vh - 65px);
+    overflow-x: auto;
+  }
+
+  .column { flex: 1; min-width: 340px; max-width: 500px; }
+
+  .column-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px 8px 0 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .column-header .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot-running { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot-completed { background: var(--purple); }
+  .dot-error { background: var(--red); }
+
+  .column-header .count {
+    margin-left: auto;
+    background: var(--surface2);
+    color: var(--text-dim);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+  }
+
+  .column-body {
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 200px;
+    background: var(--surface);
+  }
+
+  .card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    transition: border-color 0.15s;
+  }
+  .card:hover { border-color: var(--accent); }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .card-server {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+    background: rgba(88, 166, 255, 0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .card-pid {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: monospace;
+  }
+
+  .card-project {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    word-break: break-word;
+  }
+
+  .card-cwd {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: monospace;
+    margin-bottom: 10px;
+    word-break: break-all;
+  }
+
+  /* AI Summary section */
+  .card-summary {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    background: rgba(88, 166, 255, 0.05);
+    border: 1px solid rgba(88, 166, 255, 0.15);
+    border-radius: 8px;
+  }
+
+  .summary-task {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+    line-height: 1.4;
+  }
+
+  .summary-progress {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.4;
+    margin-bottom: 8px;
+  }
+
+  .progress-bar {
+    height: 6px;
+    background: var(--surface);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+
+  .progress-running { background: linear-gradient(90deg, var(--green), var(--accent)); }
+  .progress-completed { background: var(--purple); }
+
+  .progress-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    text-align: right;
+  }
+
+  /* Fallback raw task (when no AI summary) */
+  .card-task {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.5;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent);
+    word-break: break-word;
+  }
+
+  .card-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+  }
+
+  .card-meta span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.4); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(63, 185, 80, 0); }
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  .summary-loading {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .loading-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: blink 1.4s ease-in-out infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 1; }
+  }
+
+  .error-card { border-left: 3px solid var(--red); }
+  .error-card .card-task { border-left-color: var(--red); color: var(--red); }
+
+  .auto-refresh { display: flex; align-items: center; gap: 6px; }
+  .auto-refresh label { cursor: pointer; }
+  .auto-refresh input { cursor: pointer; }
+
+  /* ---- Modal ---- */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 60px;
+  }
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 640px;
+    max-width: 95vw;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    z-index: 1;
+  }
+
+  .modal-header h2 { font-size: 16px; font-weight: 600; }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .modal-close:hover { color: var(--text); background: var(--surface2); }
+
+  .modal-body { padding: 20px; }
+
+  .setting-section {
+    margin-bottom: 20px;
+  }
+
+  .setting-section h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(48,54,61,0.5);
+  }
+
+  .setting-row label { font-size: 14px; }
+  .setting-row .desc { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+  .toggle { position: relative; width: 40px; height: 22px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle .slider {
+    position: absolute;
+    inset: 0;
+    background: var(--surface2);
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.2s;
+    border: 1px solid var(--border);
+  }
+  .toggle .slider::before {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 2px;
+    top: 2px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+  }
+  .toggle input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+  .toggle input:checked + .slider::before { transform: translateX(18px); background: #fff; }
+
+  .server-list { margin-top: 12px; }
+
+  .server-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .server-item .srv-info { flex: 1; min-width: 0; }
+  .server-item .srv-label { font-size: 14px; font-weight: 600; }
+  .server-item .srv-detail { font-size: 12px; color: var(--text-dim); font-family: monospace; margin-top: 2px; }
+  .server-item .srv-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .test-result { font-size: 11px; margin-top: 4px; }
+  .test-ok { color: var(--green); }
+  .test-fail { color: var(--red); }
+
+  .server-form {
+    background: var(--surface2);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 12px;
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .form-group { display: flex; flex-direction: column; gap: 4px; }
+  .form-group.full { grid-column: 1 / -1; }
+  .form-group label { font-size: 12px; color: var(--text-dim); }
+  .form-group input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .form-group input:focus { outline: none; border-color: var(--accent); }
+  .form-group input::placeholder { color: var(--text-dim); opacity: 0.6; }
+
+  .form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+
+  @media (max-width: 900px) {
+    .board { flex-direction: column; }
+    .column { max-width: 100%; min-width: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    <span class="logo">C</span>
+    Claude Code Agent Kanban
+  </h1>
+  <div class="header-right">
+    <span id="status-text">Loading...</span>
+    <div class="auto-refresh">
+      <input type="checkbox" id="auto-refresh" checked>
+      <label for="auto-refresh">Auto-refresh</label>
+    </div>
+    <button class="btn" onclick="doRefresh()" id="refresh-btn">Refresh</button>
+    <button class="btn" onclick="openSettings()">Settings</button>
+  </div>
+</header>
+
+<div class="board" id="board">
+  <div class="column">
+    <div class="column-header">
+      <span class="dot dot-running"></span>
+      Running
+      <span class="count" id="count-running">0</span>
+    </div>
+    <div class="column-body" id="col-running">
+      <div class="empty-state">Loading sessions...</div>
+    </div>
+  </div>
+  <div class="column">
+    <div class="column-header">
+      <span class="dot dot-completed"></span>
+      Completed
+      <span class="count" id="count-completed">0</span>
+    </div>
+    <div class="column-body" id="col-completed">
+      <div class="empty-state">Loading sessions...</div>
+    </div>
+  </div>
+  <div class="column">
+    <div class="column-header">
+      <span class="dot dot-error"></span>
+      Errors
+      <span class="count" id="count-errors">0</span>
+    </div>
+    <div class="column-body" id="col-errors">
+      <div class="empty-state">Loading sessions...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Settings</h2>
+      <button class="modal-close" onclick="closeSettings()">&times;</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- Local scan -->
+      <div class="setting-section">
+        <h3>Local Machine</h3>
+        <div class="setting-row">
+          <div>
+            <label>Scan local machine</label>
+            <div class="desc">Include Claude Code sessions from this machine</div>
+          </div>
+          <div class="toggle">
+            <input type="checkbox" id="toggle-local" onchange="toggleLocal(this.checked)">
+            <span class="slider"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Remote servers -->
+      <div class="setting-section">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <h3 style="border:none; margin:0; padding:0;">Remote Servers</h3>
+          <button class="btn btn-primary btn-sm" onclick="showAddForm()">+ Add Server</button>
+        </div>
+        <div id="server-list" class="server-list"></div>
+        <div id="server-form-container"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+const REFRESH_INTERVAL = 30000;
+let refreshTimer = null;
+let editingIndex = null;
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function timeAgo(isoStr) {
+  if (!isoStr) return '';
+  const now = Date.now();
+  const then = new Date(isoStr).getTime();
+  const diffSec = Math.floor((now - then) / 1000);
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+function truncate(str, len) {
+  if (!str) return '';
+  return str.length > len ? str.slice(0, len) + '...' : str;
+}
+
+// ---- Card rendering ----
+
+function renderSummary(session) {
+  const ai = session.aiSummary;
+  if (!ai) {
+    // Show raw first message + loading hint
+    if (session.taskSummary) {
+      return `<div class="card-task">${escapeHtml(truncate(session.taskSummary, 200))}</div>
+        <div class="summary-loading"><span class="loading-dot"></span> Generating AI summary...</div>`;
+    }
+    return '';
+  }
+
+  const isRunning = session.alive;
+  const pct = ai.percent;
+  const barClass = isRunning ? 'progress-running' : 'progress-completed';
+
+  let progressBar = '';
+  if (pct !== null && pct !== undefined) {
+    progressBar = `
+      <div class="progress-bar">
+        <div class="progress-bar-fill ${barClass}" style="width:${Math.min(100, Math.max(0, pct))}%"></div>
+      </div>
+      <div class="progress-label">${pct}%</div>`;
+  }
+
+  return `
+    <div class="card-summary">
+      <div class="summary-task">${escapeHtml(ai.task || '')}</div>
+      ${ai.progress ? `<div class="summary-progress">${escapeHtml(ai.progress)}</div>` : ''}
+      ${progressBar}
+    </div>`;
+}
+
+function renderCard(session, isError) {
+  if (isError) {
+    return `
+      <div class="card error-card">
+        <div class="card-top">
+          <span class="card-server">${escapeHtml(session.server || 'unknown')}</span>
+        </div>
+        <div class="card-task">Connection failed: ${escapeHtml(session.error)}</div>
+      </div>`;
+  }
+  const alive = session.alive;
+  return `
+    <div class="card">
+      <div class="card-top">
+        <span class="card-server">${escapeHtml(session.server || 'unknown')}</span>
+        <span class="card-pid">${alive ? '<span class="pulse"></span> ' : ''}PID ${session.pid || '?'}</span>
+      </div>
+      <div class="card-project">${escapeHtml(session.project || 'unknown')}</div>
+      <div class="card-cwd">${escapeHtml(session.cwd || '')}</div>
+      ${renderSummary(session)}
+      <div class="card-meta">
+        <span>Started ${timeAgo(session.startedAt)}</span>
+        ${session.lastActivity ? `<span>Active ${timeAgo(session.lastActivity)}</span>` : ''}
+        ${session.messageCount ? `<span>${session.messageCount} msgs</span>` : ''}
+        <span>${session.kind || ''}</span>
+      </div>
+    </div>`;
+}
+
+async function fetchSessions(force) {
+  const url = force ? '/api/refresh' : '/api/sessions';
+  const opts = force ? { method: 'POST' } : {};
+  try {
+    const res = await fetch(url, opts);
+    return await res.json();
+  } catch (e) {
+    console.error('Fetch error:', e);
+    return null;
+  }
+}
+
+async function render(force) {
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('loading');
+  btn.textContent = 'Refreshing...';
+
+  const data = await fetchSessions(force);
+
+  btn.classList.remove('loading');
+  btn.textContent = 'Refresh';
+
+  if (!data) {
+    document.getElementById('status-text').textContent = 'Failed to fetch';
+    return;
+  }
+
+  const { running, completed, errors, collectedAt } = data;
+
+  document.getElementById('count-running').textContent = running.length;
+  document.getElementById('count-completed').textContent = completed.length;
+  document.getElementById('count-errors').textContent = errors.length;
+
+  document.getElementById('col-running').innerHTML =
+    running.length ? running.map(s => renderCard(s, false)).join('') : '<div class="empty-state">No running agents</div>';
+
+  document.getElementById('col-completed').innerHTML =
+    completed.length ? completed.map(s => renderCard(s, false)).join('') : '<div class="empty-state">No completed sessions</div>';
+
+  document.getElementById('col-errors').innerHTML =
+    errors.length ? errors.map(s => renderCard(s, true)).join('') : '<div class="empty-state">All servers connected</div>';
+
+  const total = running.length + completed.length;
+  const servers = new Set([...running, ...completed, ...errors].map(s => s.server)).size;
+  document.getElementById('status-text').textContent =
+    `${total} sessions across ${servers} server${servers !== 1 ? 's' : ''} \u00B7 Updated ${timeAgo(collectedAt)}`;
+}
+
+function doRefresh() { render(true); }
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (document.getElementById('auto-refresh').checked) render(false);
+  }, REFRESH_INTERVAL);
+}
+
+document.getElementById('auto-refresh').addEventListener('change', (e) => {
+  if (e.target.checked) startAutoRefresh();
+  else if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+});
+
+// ---- Settings ----
+
+function openSettings() {
+  document.getElementById('settings-modal').classList.add('open');
+  loadServerList();
+}
+
+function closeSettings() {
+  document.getElementById('settings-modal').classList.remove('open');
+  document.getElementById('server-form-container').innerHTML = '';
+  editingIndex = null;
+  render(true);
+}
+
+document.getElementById('settings-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeSettings();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('settings-modal').classList.contains('open')) {
+    closeSettings();
+  }
+});
+
+// ---- Server list ----
+
+async function loadServerList() {
+  try {
+    const res = await fetch('/api/servers');
+    const data = await res.json();
+
+    document.getElementById('toggle-local').checked = data.include_local;
+
+    const container = document.getElementById('server-list');
+    if (data.servers.length === 0) {
+      container.innerHTML = '<div class="empty-state" style="padding:20px;">No remote servers configured</div>';
+      return;
+    }
+
+    container.innerHTML = data.servers.map((srv, i) => `
+      <div class="server-item" id="srv-item-${i}">
+        <div class="srv-info">
+          <div class="srv-label">${escapeHtml(srv.label || srv.host)}</div>
+          <div class="srv-detail">${escapeHtml(srv.user || 'default')}@${escapeHtml(srv.host)}:${srv.port || 22}</div>
+          ${srv.key ? `<div class="srv-detail">Key: ${escapeHtml(srv.key)}</div>` : ''}
+          <div class="test-result" id="test-result-${i}"></div>
+        </div>
+        <div class="srv-actions">
+          <button class="btn btn-sm" onclick="testServer(${i})">Test</button>
+          <button class="btn btn-sm" onclick="showEditForm(${i})">Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteServer(${i})">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('Failed to load servers:', e);
+  }
+}
+
+async function toggleLocal(checked) {
+  await fetch('/api/config/local', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ include_local: checked }),
+  });
+}
+
+function renderServerForm(data) {
+  const isEdit = editingIndex !== null;
+  return `
+    <div class="server-form">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Label</label>
+          <input type="text" id="sf-label" placeholder="My Server" value="${escapeHtml(data.label || '')}">
+        </div>
+        <div class="form-group">
+          <label>Host *</label>
+          <input type="text" id="sf-host" placeholder="192.168.1.100" value="${escapeHtml(data.host || '')}">
+        </div>
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" id="sf-user" placeholder="ubuntu" value="${escapeHtml(data.user || '')}">
+        </div>
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" id="sf-port" placeholder="22" value="${data.port || ''}">
+        </div>
+        <div class="form-group full">
+          <label>SSH Key Path</label>
+          <input type="text" id="sf-key" placeholder="~/.ssh/id_rsa (leave empty for SSH agent)" value="${escapeHtml(data.key || '')}">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-sm" onclick="cancelForm()">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="submitForm()">${isEdit ? 'Save' : 'Add Server'}</button>
+      </div>
+    </div>`;
+}
+
+function showAddForm() {
+  editingIndex = null;
+  document.getElementById('server-form-container').innerHTML = renderServerForm({});
+  document.getElementById('sf-host').focus();
+}
+
+async function showEditForm(idx) {
+  try {
+    const res = await fetch('/api/servers');
+    const data = await res.json();
+    const srv = data.servers[idx];
+    if (!srv) return;
+    editingIndex = idx;
+    document.getElementById('server-form-container').innerHTML = renderServerForm(srv);
+    document.getElementById('sf-host').focus();
+  } catch (e) { console.error(e); }
+}
+
+function cancelForm() {
+  document.getElementById('server-form-container').innerHTML = '';
+  editingIndex = null;
+}
+
+function getFormData() {
+  const data = {};
+  const host = document.getElementById('sf-host').value.trim();
+  const label = document.getElementById('sf-label').value.trim();
+  const user = document.getElementById('sf-user').value.trim();
+  const port = document.getElementById('sf-port').value.trim();
+  const key = document.getElementById('sf-key').value.trim();
+  if (!host) { alert('Host is required'); return null; }
+  data.host = host;
+  if (label) data.label = label;
+  if (user) data.user = user;
+  if (port) data.port = parseInt(port);
+  if (key) data.key = key;
+  return data;
+}
+
+async function submitForm() {
+  const data = getFormData();
+  if (!data) return;
+  const isEdit = editingIndex !== null;
+  const url = isEdit ? `/api/servers/${editingIndex}` : '/api/servers';
+  const method = isEdit ? 'PUT' : 'POST';
+  try {
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    const result = await res.json();
+    if (result.error) { alert(result.error); return; }
+    cancelForm();
+    loadServerList();
+  } catch (e) { alert('Failed to save: ' + e.message); }
+}
+
+async function deleteServer(idx) {
+  if (!confirm('Remove this server?')) return;
+  try {
+    await fetch(`/api/servers/${idx}`, { method: 'DELETE' });
+    loadServerList();
+  } catch (e) { alert('Failed to delete: ' + e.message); }
+}
+
+async function testServer(idx) {
+  const el = document.getElementById(`test-result-${idx}`);
+  el.className = 'test-result';
+  el.textContent = 'Testing...';
+  try {
+    const res = await fetch(`/api/servers/${idx}/test`, { method: 'POST' });
+    const result = await res.json();
+    if (result.ok) {
+      el.className = 'test-result test-ok';
+      el.textContent = `Connected - ${result.sessions} session(s) found`;
+    } else {
+      el.className = 'test-result test-fail';
+      el.textContent = `Failed: ${result.error}`;
+    }
+  } catch (e) {
+    el.className = 'test-result test-fail';
+    el.textContent = `Error: ${e.message}`;
+  }
+}
+
+// ---- Init ----
+// First load, then poll quickly a few times to pick up background AI summaries
+render(false);
+let fastPollCount = 0;
+const fastPoll = setInterval(async () => {
+  fastPollCount++;
+  await render(false);
+  if (fastPollCount >= 4) { // 4 retries at 5s = 20s of fast polling
+    clearInterval(fastPoll);
+    startAutoRefresh();
+  }
+}, 5000);
+</script>
+</body>
+</html>
