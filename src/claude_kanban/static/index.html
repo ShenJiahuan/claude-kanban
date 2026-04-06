@@ -239,6 +239,13 @@
     word-break: break-word;
   }
 
+  .card-tokens {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    margin-top: 6px;
+  }
+
   .card-session-id {
     font-size: 11px;
     color: var(--text-dim);
@@ -646,6 +653,18 @@ function renderSummary(session) {
     </div>`;
 }
 
+function formatTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function renderTokenUsage(session) {
+  const u = session.tokenUsage;
+  if (!u || (!u.totalInputTokens && !u.totalOutputTokens)) return '';
+  return `<div class="card-tokens">Tokens: ${formatTokens(u.totalInputTokens)} in / ${formatTokens(u.totalOutputTokens)} out</div>`;
+}
+
 function renderCard(session, isError, showDismiss) {
   if (isError) {
     return `
@@ -669,6 +688,7 @@ function renderCard(session, isError, showDismiss) {
       <div class="card-project">${escapeHtml(session.project || 'unknown')}</div>
       <div class="card-cwd">${escapeHtml(session.cwd || '')}</div>
       ${renderSummary(session)}
+      ${renderTokenUsage(session)}
       ${session.sessionId ? `<div class="card-session-id" title="${escapeHtml(session.sessionId)}">Session: ${escapeHtml(session.sessionId)}</div>` : ''}
       <div class="card-meta">
         <span>Started ${timeAgo(session.startedAt)}</span>

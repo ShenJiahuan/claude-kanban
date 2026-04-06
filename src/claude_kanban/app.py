@@ -112,8 +112,9 @@ def collect_local():
         last_activity = started_at
         message_count = 0
         excerpt = []
+        token_usage = {"totalInputTokens": 0, "totalOutputTokens": 0, "cacheCreationTokens": 0, "cacheReadTokens": 0}
         if jsonl_path:
-            task_summary, last_activity, message_count, excerpt = _parse_jsonl(jsonl_path, started_at)
+            task_summary, last_activity, message_count, excerpt, token_usage = _parse_jsonl(jsonl_path, started_at)
 
         # Skip summarization sessions
         if task_summary and "concise status reporter" in task_summary:
@@ -136,6 +137,7 @@ def collect_local():
             "alive": alive,
             "taskSummary": task_summary,
             "messageCount": message_count,
+            "tokenUsage": token_usage,
             "conversationExcerpt": excerpt,
             "server": server_name,
         })
@@ -185,6 +187,10 @@ def _parse_jsonl(path, started_at):
     task_summary = ""
     last_ts = started_at
     message_count = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    cache_creation_tokens = 0
+    cache_read_tokens = 0
     # Collect conversation messages for AI summarization
     first_messages = []  # first few user messages (the task)
     recent_messages = []  # rolling window of recent messages
@@ -206,6 +212,14 @@ def _parse_jsonl(path, started_at):
                 # Count user/assistant messages
                 if role in ("user", "assistant"):
                     message_count += 1
+
+                # Track token usage from assistant messages
+                if role == "assistant":
+                    usage = entry.get("message", {}).get("usage", {})
+                    total_input_tokens += usage.get("input_tokens", 0)
+                    total_output_tokens += usage.get("output_tokens", 0)
+                    cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+                    cache_read_tokens += usage.get("cache_read_input_tokens", 0)
 
                 # Extract text content for conversation excerpt
                 if role in ("user", "assistant"):
@@ -256,7 +270,13 @@ def _parse_jsonl(path, started_at):
         if m["text"] not in first_texts:
             excerpt.append(m)
 
-    return task_summary, last_ts, message_count, excerpt
+    token_usage = {
+        "totalInputTokens": total_input_tokens,
+        "totalOutputTokens": total_output_tokens,
+        "cacheCreationTokens": cache_creation_tokens,
+        "cacheReadTokens": cache_read_tokens,
+    }
+    return task_summary, last_ts, message_count, excerpt, token_usage
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +381,10 @@ for sf in sessions_dir.glob("*.json"):
     # Find and parse JSONL
     task_summary = ""
     message_count = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    cache_creation_tokens = 0
+    cache_read_tokens = 0
     last_activity = started_at
     first_msgs = []
     recent_msgs = []
@@ -385,6 +409,13 @@ for sf in sessions_dir.glob("*.json"):
                     role = entry.get("message", {}).get("role", msg_type)
                     if role in ("user", "assistant"):
                         message_count += 1
+                    if role == "assistant":
+                        usage = entry.get("message", {}).get("usage", {})
+                        total_input_tokens += usage.get("input_tokens", 0)
+                        total_output_tokens += usage.get("output_tokens", 0)
+                        cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+                        cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+                    if role in ("user", "assistant"):
                         text = extract_text(entry.get("message", {}).get("content", ""))
                         if text and not text.startswith("<"):
                             me = {"role": role, "text": text[:500]}
@@ -429,6 +460,12 @@ for sf in sessions_dir.glob("*.json"):
         "alive": alive,
         "taskSummary": task_summary,
         "messageCount": message_count,
+        "tokenUsage": {
+            "totalInputTokens": total_input_tokens,
+            "totalOutputTokens": total_output_tokens,
+            "cacheCreationTokens": cache_creation_tokens,
+            "cacheReadTokens": cache_read_tokens,
+        },
         "conversationExcerpt": excerpt,
     })
 
