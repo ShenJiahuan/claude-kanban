@@ -283,31 +283,59 @@ def _parse_jsonl(path, started_at):
 # Remote collection via SSH
 # ---------------------------------------------------------------------------
 
+def _load_ssh_config():
+    """Load and parse ~/.ssh/config if it exists."""
+    ssh_config = paramiko.SSHConfig()
+    ssh_config_path = os.path.expanduser("~/.ssh/config")
+    if os.path.exists(ssh_config_path):
+        with open(ssh_config_path) as f:
+            ssh_config.parse(f)
+    return ssh_config
+
+
 def collect_remote(server_conf):
     """Collect Claude Code sessions from a remote server via SSH."""
     host = server_conf["host"]
-    port = server_conf.get("port", 22)
-    user = server_conf.get("user", os.getenv("USER", "root"))
-    key_path = os.path.expanduser(server_conf.get("key", "~/.ssh/id_rsa"))
     label = server_conf.get("label", host)
 
     script = _remote_script()
 
     try:
+        ssh_config = _load_ssh_config()
+        ssh_info = ssh_config.lookup(host)
+
+        hostname = server_conf.get("hostname", ssh_info.get("hostname", host))
+        port = server_conf.get("port", int(ssh_info.get("port", 22)))
+        user = server_conf.get("user", ssh_info.get("user", os.getenv("USER", "root")))
+
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         connect_kwargs = {
-            "hostname": host,
+            "hostname": hostname,
             "port": port,
             "username": user,
             "timeout": 10,
             "banner_timeout": 10,
         }
+
+        # Set up ProxyCommand if defined in SSH config
+        proxy_cmd = ssh_info.get("proxycommand")
+        if proxy_cmd:
+            connect_kwargs["sock"] = paramiko.ProxyCommand(proxy_cmd)
+
+        # Determine SSH key
+        key_path = server_conf.get("key")
+        if key_path:
+            key_path = os.path.expanduser(key_path)
+        elif "identityfile" in ssh_info:
+            key_path = os.path.expanduser(ssh_info["identityfile"][0])
+        else:
+            key_path = os.path.expanduser("~/.ssh/id_rsa")
+
         if os.path.exists(key_path):
             connect_kwargs["key_filename"] = key_path
         else:
-            # Fall back to SSH agent
             connect_kwargs["allow_agent"] = True
 
         client.connect(**connect_kwargs)
