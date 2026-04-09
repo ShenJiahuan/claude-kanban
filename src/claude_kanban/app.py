@@ -483,7 +483,7 @@ def _load_ssh_config():
     return ssh_config
 
 
-def collect_remote(server_conf, provider):
+def collect_remote(server_conf, provider="claude"):
     """Collect sessions from a remote server via SSH."""
     host = server_conf["host"]
     label = server_conf.get("label", host)
@@ -1021,13 +1021,14 @@ def api_config_provider():
 def api_servers_test(idx):
     """Test SSH connection to a server."""
     config = load_config()
+    provider = config.get("provider", "claude")
     servers = config.get("servers", [])
     if idx < 0 or idx >= len(servers):
         return jsonify({"error": "Server not found"}), 404
 
     srv = servers[idx]
     try:
-        result = collect_remote(srv)
+        result = collect_remote(srv, provider)
         has_error = any("error" in r for r in result)
         if has_error:
             return jsonify({"ok": False, "error": result[0].get("error", "Unknown error")})
@@ -1294,7 +1295,8 @@ def _summarize_all(sessions):
 
 @app.route("/api/sessions")
 def api_sessions():
-    # collect_all only returns currently active sessions
+    # Claude collection returns active sessions only, while Codex collection can
+    # also include inactive session logs so we can surface them as completed.
     sessions = _get_cached()
 
     # Run AI summarization
@@ -1310,14 +1312,23 @@ def api_sessions():
             errors.append(s)
             continue
         sid = s.get("sessionId", "")
-        current_running_ids.add(sid)
         # Build a copy without conversationExcerpt for the response
         clean = {k: v for k, v in s.items() if k != "conversationExcerpt"}
-        running.append(clean)
+
+        if s.get("alive"):
+            current_running_ids.add(sid)
+            running.append(clean)
+        else:
+            clean["alive"] = False
+
         # Track in known_sessions; remove from completed if resumed
         with _known_sessions["lock"]:
-            _known_sessions["running"][sid] = clean
-            _known_sessions["completed"].pop(sid, None)
+            if s.get("alive"):
+                _known_sessions["running"][sid] = clean
+                _known_sessions["completed"].pop(sid, None)
+            else:
+                _known_sessions["running"].pop(sid, None)
+                _known_sessions["completed"][sid] = clean
 
     # Sessions that were running before but are no longer → completed
     with _known_sessions["lock"]:
