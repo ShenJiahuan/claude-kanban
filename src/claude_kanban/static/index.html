@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Code Agent Kanban</title>
+<title>Code Agent Kanban</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -505,7 +505,7 @@
 <header>
   <h1>
     <span class="logo">C</span>
-    Claude Code Agent Kanban
+    Code Agent Kanban
   </h1>
   <div class="header-right">
     <span id="status-text">Loading...</span>
@@ -566,11 +566,23 @@
         <div class="setting-row">
           <div>
             <label>Scan local machine</label>
-            <div class="desc">Include Claude Code sessions from this machine</div>
+            <div class="desc">Include sessions from this machine</div>
           </div>
           <div class="toggle">
             <input type="checkbox" id="toggle-local" onchange="toggleLocal(this.checked)">
             <span class="slider"></span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <label>Session provider</label>
+            <div class="desc">Choose which local/remote session format to scan and summarize</div>
+          </div>
+          <div>
+            <select id="provider-select" onchange="setProvider(this.value)" style="background:var(--bg); color:var(--text); border:1px solid var(--border); padding:6px 10px; border-radius:6px;">
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
           </div>
         </div>
       </div>
@@ -802,6 +814,8 @@ async function loadServerList() {
     const data = await res.json();
 
     document.getElementById('toggle-local').checked = data.include_local;
+    const providerSelect = document.getElementById('provider-select');
+    if (providerSelect) providerSelect.value = data.provider || 'claude';
 
     const container = document.getElementById('server-list');
     if (data.servers.length === 0) {
@@ -835,6 +849,15 @@ async function toggleLocal(checked) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ include_local: checked }),
   });
+}
+
+async function setProvider(provider) {
+  await fetch('/api/config/provider', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  });
+  render(true);
 }
 
 function renderServerForm(data) {

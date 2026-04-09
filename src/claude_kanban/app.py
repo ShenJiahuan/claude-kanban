@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Claude Code Agent Kanban - Web dashboard for monitoring Claude Code sessions across servers."""
+"""Code Agent Kanban - Web dashboard for monitoring AI coding sessions across servers."""
 
 import glob
 import json
 import os
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -23,6 +24,22 @@ app = Flask(__name__, static_folder=str(_PKG_DIR / "static"))
 
 CONFIG_PATH = os.environ.get("KANBAN_CONFIG", str(_DATA_DIR / "config.yaml"))
 CACHE_TTL = 30  # seconds
+CODEX_ACTIVE_WINDOW_SEC = 300
+MAX_CODEX_SESSIONS = 100
+SUMMARIZER_MODEL_CLAUDE = os.environ.get("KANBAN_SUMMARY_MODEL_CLAUDE", "haiku")
+SUMMARIZER_MODEL_CODEX = os.environ.get("KANBAN_SUMMARY_MODEL_CODEX", "")
+PROVIDERS = {
+    "claude": {
+        "label": "Claude Code",
+        "session_dir": ".claude/sessions",
+        "project_dir": ".claude/projects",
+    },
+    "codex": {
+        "label": "Codex",
+        "session_dir": ".codex/sessions",
+        "project_dir": ".codex/sessions",
+    },
+}
 _cache = {"data": None, "ts": 0, "lock": threading.Lock()}
 
 # Summary cache: {sessionId: {"messageCount": N, "summary": {...}}}
@@ -52,7 +69,22 @@ _known_sessions = {"lock": threading.Lock(), "running": {}, "completed": {}}
 
 
 def _default_config():
-    return {"include_local": True, "servers": []}
+    return {"provider": "claude", "include_local": True, "servers": []}
+
+
+def _normalize_provider(provider):
+    if provider in PROVIDERS:
+        return provider
+    return "claude"
+
+
+def _normalize_config(config):
+    cfg = dict(config or {})
+    cfg["provider"] = _normalize_provider(cfg.get("provider"))
+    cfg["include_local"] = bool(cfg.get("include_local", True))
+    servers = cfg.get("servers")
+    cfg["servers"] = servers if isinstance(servers, list) else []
+    return cfg
 
 
 def load_config():
@@ -60,19 +92,19 @@ def load_config():
     if not path.exists():
         return _default_config()
     with open(path) as f:
-        return yaml.safe_load(f) or _default_config()
+        return _normalize_config(yaml.safe_load(f) or _default_config())
 
 
 def save_config(config):
     with open(CONFIG_PATH, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        yaml.dump(_normalize_config(config), f, default_flow_style=False, allow_unicode=True)
 
 
 # ---------------------------------------------------------------------------
 # Local collection
 # ---------------------------------------------------------------------------
 
-def collect_local():
+def collect_local_claude():
     """Collect currently active Claude Code sessions from the local machine.
 
     Only returns sessions that have an entry in ~/.claude/sessions/ (i.e. running).
@@ -143,6 +175,164 @@ def collect_local():
         })
 
     return sessions
+
+
+def _parse_iso_timestamp_ms(ts_str):
+    if not ts_str:
+        return 0
+    try:
+        return int(datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
+def _extract_codex_text_content(content):
+    """Extract plain text from Codex message content items."""
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    texts = []
+    for c in content:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") in ("input_text", "output_text", "text"):
+            texts.append(c.get("text", ""))
+    return " ".join(t for t in texts if t).strip()
+
+
+def _parse_codex_session(jsonl_path, server_name):
+    """Parse a Codex session JSONL file."""
+    session_id = ""
+    cwd = ""
+    started_at = 0
+    task_summary = ""
+    last_ts = 0
+    message_count = 0
+    first_messages = []
+    recent_messages = []
+
+    try:
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                ts_ms = _parse_iso_timestamp_ms(entry.get("timestamp", ""))
+                if ts_ms > last_ts:
+                    last_ts = ts_ms
+
+                if entry.get("type") == "session_meta":
+                    payload = entry.get("payload", {})
+                    session_id = payload.get("id", session_id)
+                    cwd = payload.get("cwd", cwd)
+                    started_at = _parse_iso_timestamp_ms(payload.get("timestamp", "")) or started_at
+                    continue
+
+                if entry.get("type") != "response_item":
+                    continue
+
+                payload = entry.get("payload", {})
+                if payload.get("type") != "message":
+                    continue
+
+                role = payload.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+
+                message_count += 1
+                text = _extract_codex_text_content(payload.get("content", ""))
+                if not text or text.startswith("<"):
+                    continue
+
+                msg_entry = {"role": role, "text": text[:500]}
+                if len(first_messages) < 3:
+                    first_messages.append(msg_entry)
+                recent_messages.append(msg_entry)
+                if len(recent_messages) > 6:
+                    recent_messages.pop(0)
+
+                if not task_summary and role == "user":
+                    task_summary = text[:300]
+    except OSError:
+        return None
+
+    try:
+        mtime_ms = int(jsonl_path.stat().st_mtime * 1000)
+        if mtime_ms > last_ts:
+            last_ts = mtime_ms
+    except OSError:
+        pass
+
+    if not started_at:
+        started_at = last_ts
+
+    if task_summary and "concise status reporter" in task_summary:
+        return None
+
+    first_texts = {m["text"] for m in first_messages}
+    excerpt = list(first_messages)
+    for m in recent_messages:
+        if m["text"] not in first_texts:
+            excerpt.append(m)
+
+    now_ms = int(time.time() * 1000)
+    active_window_ms = CODEX_ACTIVE_WINDOW_SEC * 1000
+    alive = bool(last_ts and (now_ms - last_ts) <= active_window_ms)
+
+    started_dt = datetime.fromtimestamp(started_at / 1000, tz=timezone.utc).isoformat() if started_at else ""
+    last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc).isoformat() if last_ts else ""
+
+    sid = session_id or jsonl_path.stem
+    return {
+        "sessionId": sid,
+        "pid": None,
+        "cwd": cwd,
+        "project": os.path.basename(cwd) if cwd else "",
+        "startedAt": started_dt,
+        "lastActivity": last_dt,
+        "kind": "codex",
+        "entrypoint": "codex",
+        "alive": alive,
+        "taskSummary": task_summary,
+        "messageCount": message_count,
+        "tokenUsage": {"totalInputTokens": 0, "totalOutputTokens": 0, "cacheCreationTokens": 0, "cacheReadTokens": 0},
+        "conversationExcerpt": excerpt,
+        "server": server_name,
+    }
+
+
+def collect_local_codex():
+    """Collect Codex sessions from ~/.codex/sessions."""
+    home = Path.home()
+    sessions_dir = home / ".codex" / "sessions"
+    server_name = platform.node() or "localhost"
+    if not sessions_dir.exists():
+        return []
+
+    session_files = sorted(
+        sessions_dir.rglob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )[:MAX_CODEX_SESSIONS]
+
+    sessions = []
+    for sf in session_files:
+        parsed = _parse_codex_session(sf, server_name)
+        if parsed:
+            sessions.append(parsed)
+    return sessions
+
+
+def collect_local(provider):
+    if provider == "codex":
+        return collect_local_codex()
+    return collect_local_claude()
 
 
 def _find_jsonl(session_id, projects_dir):
@@ -293,12 +483,12 @@ def _load_ssh_config():
     return ssh_config
 
 
-def collect_remote(server_conf):
-    """Collect Claude Code sessions from a remote server via SSH."""
+def collect_remote(server_conf, provider):
+    """Collect sessions from a remote server via SSH."""
     host = server_conf["host"]
     label = server_conf.get("label", host)
 
-    script = _remote_script()
+    script = _remote_script(provider)
 
     try:
         ssh_config = _load_ssh_config()
@@ -361,8 +551,152 @@ def _shell_quote(s):
     return "'" + s.replace("'", "'\"'\"'") + "'"
 
 
-def _remote_script():
-    """Python script to run on remote servers to collect only active session data."""
+def _remote_script(provider):
+    """Python script to run on remote servers to collect session data."""
+    if provider == "codex":
+        return r'''
+import json, os, sys, time
+from pathlib import Path
+from datetime import datetime, timezone
+
+ACTIVE_WINDOW_MS = 5 * 60 * 1000
+MAX_SESSIONS = 100
+
+def parse_iso_ms(ts):
+    if not ts:
+        return 0
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
+
+def extract_text(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        texts = []
+        for c in content:
+            if isinstance(c, dict) and c.get("type") in ("input_text", "output_text", "text"):
+                texts.append(c.get("text", ""))
+        return " ".join(t for t in texts if t).strip()
+    return ""
+
+def parse_session(path):
+    session_id = ""
+    cwd = ""
+    started_at = 0
+    task_summary = ""
+    last_ts = 0
+    message_count = 0
+    first_msgs = []
+    recent_msgs = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                ts_ms = parse_iso_ms(entry.get("timestamp", ""))
+                if ts_ms > last_ts:
+                    last_ts = ts_ms
+
+                if entry.get("type") == "session_meta":
+                    payload = entry.get("payload", {})
+                    session_id = payload.get("id", session_id)
+                    cwd = payload.get("cwd", cwd)
+                    started_at = parse_iso_ms(payload.get("timestamp", "")) or started_at
+                    continue
+
+                if entry.get("type") != "response_item":
+                    continue
+                payload = entry.get("payload", {})
+                if payload.get("type") != "message":
+                    continue
+                role = payload.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                message_count += 1
+                text = extract_text(payload.get("content", ""))
+                if not text or text.startswith("<"):
+                    continue
+                me = {"role": role, "text": text[:500]}
+                if len(first_msgs) < 3:
+                    first_msgs.append(me)
+                recent_msgs.append(me)
+                if len(recent_msgs) > 6:
+                    recent_msgs.pop(0)
+                if not task_summary and role == "user":
+                    task_summary = text[:300]
+    except Exception:
+        return None
+
+    try:
+        mtime_ms = int(path.stat().st_mtime * 1000)
+        if mtime_ms > last_ts:
+            last_ts = mtime_ms
+    except Exception:
+        pass
+
+    if not started_at:
+        started_at = last_ts
+
+    if task_summary and "concise status reporter" in task_summary:
+        return None
+
+    first_texts = {m["text"] for m in first_msgs}
+    excerpt = list(first_msgs)
+    for m in recent_msgs:
+        if m["text"] not in first_texts:
+            excerpt.append(m)
+
+    now_ms = int(time.time() * 1000)
+    alive = bool(last_ts and (now_ms - last_ts) <= ACTIVE_WINDOW_MS)
+    sid = session_id or path.stem
+    started_dt = datetime.fromtimestamp(started_at / 1000, tz=timezone.utc).isoformat() if started_at else ""
+    last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc).isoformat() if last_ts else ""
+
+    return {
+        "sessionId": sid,
+        "pid": None,
+        "cwd": cwd,
+        "project": os.path.basename(cwd) if cwd else "",
+        "startedAt": started_dt,
+        "lastActivity": last_dt,
+        "kind": "codex",
+        "entrypoint": "codex",
+        "alive": alive,
+        "taskSummary": task_summary,
+        "messageCount": message_count,
+        "tokenUsage": {"totalInputTokens": 0, "totalOutputTokens": 0, "cacheCreationTokens": 0, "cacheReadTokens": 0},
+        "conversationExcerpt": excerpt,
+    }
+
+home = Path.home()
+sessions_dir = home / ".codex" / "sessions"
+if not sessions_dir.exists():
+    print("[]")
+    sys.exit(0)
+
+files = sorted(
+    sessions_dir.rglob("*.jsonl"),
+    key=lambda p: p.stat().st_mtime if p.exists() else 0,
+    reverse=True,
+)[:MAX_SESSIONS]
+
+results = []
+for fp in files:
+    session = parse_session(fp)
+    if session:
+        results.append(session)
+
+print(json.dumps(results))
+'''
+
     return r'''
 import json, os, sys
 from pathlib import Path
@@ -508,16 +842,17 @@ print(json.dumps(results))
 def _collect_all():
     """Collect sessions from all configured sources in parallel."""
     config = load_config()
+    provider = config.get("provider", "claude")
     all_sessions = []
 
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {}
 
         if config.get("include_local", True):
-            futures[pool.submit(collect_local)] = "local"
+            futures[pool.submit(collect_local, provider)] = "local"
 
         for srv in config.get("servers", []):
-            futures[pool.submit(collect_remote, srv)] = srv.get("label", srv["host"])
+            futures[pool.submit(collect_remote, srv, provider)] = srv.get("label", srv["host"])
 
         for future in as_completed(futures):
             try:
@@ -527,6 +862,9 @@ def _collect_all():
                 label = futures[future]
                 all_sessions.append({"server": label, "error": str(e)})
 
+    for s in all_sessions:
+        if "error" not in s:
+            s["provider"] = provider
     return all_sessions
 
 
@@ -592,6 +930,7 @@ def api_servers_list():
     return jsonify({
         "servers": servers,
         "include_local": config.get("include_local", True),
+        "provider": config.get("provider", "claude"),
     })
 
 
@@ -666,6 +1005,18 @@ def api_config_local():
     return jsonify({"ok": True, "include_local": config["include_local"]})
 
 
+@app.route("/api/config/provider", methods=["PUT"])
+def api_config_provider():
+    """Set session provider (claude or codex)."""
+    body = request.get_json() or {}
+    provider = _normalize_provider(body.get("provider"))
+    config = load_config()
+    config["provider"] = provider
+    save_config(config)
+    _invalidate_cache()
+    return jsonify({"ok": True, "provider": provider})
+
+
 @app.route("/api/servers/<int:idx>/test", methods=["POST"])
 def api_servers_test(idx):
     """Test SSH connection to a server."""
@@ -692,13 +1043,14 @@ def _invalidate_cache():
 
 
 # ---------------------------------------------------------------------------
-# AI Summarization via local Claude CLI
+# AI Summarization via local CLI (Claude/Codex)
 # ---------------------------------------------------------------------------
 
-SUMMARIZE_PROMPT = """You are a concise status reporter. Given a conversation excerpt from a Claude Code agent session, produce a brief JSON summary.
+SUMMARIZE_PROMPT = """You are a concise status reporter. Given a conversation excerpt from an AI coding agent session, produce a brief JSON summary.
 
 The session is working in: {cwd}
 The session is currently: {status}
+Agent provider: {provider}
 
 Conversation excerpt:
 {conversation}
@@ -715,7 +1067,7 @@ Be specific and concise."""
 
 
 def _summarize_session(session):
-    """Call local claude CLI to summarize a single session."""
+    """Call local CLI (claude/codex) to summarize a single session."""
     excerpt = session.get("conversationExcerpt", [])
     if not excerpt:
         return None
@@ -725,34 +1077,166 @@ def _summarize_session(session):
     )
 
     status = "RUNNING" if session.get("alive") else "COMPLETED"
+    provider = session.get("provider", "claude")
     prompt = SUMMARIZE_PROMPT.format(
         cwd=session.get("cwd", "unknown"),
         status=status,
+        provider=provider,
         conversation=conversation_text,
     )
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", prompt],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        if provider == "codex":
+            cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--json"]
+            if SUMMARIZER_MODEL_CODEX:
+                cmd.extend(["--model", SUMMARIZER_MODEL_CODEX])
+            cmd.append(prompt)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        else:
+            result = subprocess.run(
+                ["claude", "-p", "--model", SUMMARIZER_MODEL_CLAUDE, prompt],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
         if result.returncode != 0:
-            print(f"[WARN] claude CLI failed for {session.get('sessionId', '?')}: {result.stderr[:200]}")
-            return None
+            print(f"[WARN] summarize CLI failed for {session.get('sessionId', '?')}: {result.stderr[:200]}")
+            return _fallback_summary(session)
 
         text = result.stdout.strip()
-        # Strip markdown fencing if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(text)
+        if provider == "codex":
+            # codex --json can emit different JSONL event shapes; extract assistant text robustly.
+            text = _extract_codex_exec_message(text) or text
+
+        parsed = _parse_summary_json(text)
+        if not parsed.get("task") and not parsed.get("progress"):
+            return _fallback_summary(session)
+        return parsed
     except subprocess.TimeoutExpired:
-        print(f"[WARN] claude CLI timed out for {session.get('sessionId', '?')}")
-        return None
+        print(f"[WARN] summarize CLI timed out for {session.get('sessionId', '?')}")
+        return _fallback_summary(session)
     except (json.JSONDecodeError, Exception) as e:
         print(f"[WARN] Summarize failed for {session.get('sessionId', '?')}: {e}")
-        return None
+        return _fallback_summary(session)
+
+
+def _extract_first_json_object(text):
+    """Extract first JSON object from arbitrary text."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    # Prefer fenced block content if present.
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
+
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            _, end = decoder.raw_decode(text[i:])
+            return text[i:i + end]
+        except json.JSONDecodeError:
+            continue
+    return text
+
+
+def _extract_codex_exec_message(jsonl_text):
+    """Extract assistant message text from codex exec --json output."""
+    last_msg = ""
+    for line in (jsonl_text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # Format A:
+        # {"id":"0","msg":{"type":"agent_message","message":"..."}}
+        msg = event.get("msg")
+        if isinstance(msg, dict) and msg.get("type") == "agent_message":
+            message = msg.get("message")
+            if isinstance(message, str) and message.strip():
+                last_msg = message.strip()
+                continue
+
+        # Format B:
+        # {"type":"response_item","payload":{"type":"message","role":"assistant","content":[...]}}
+        if event.get("type") == "response_item":
+            payload = event.get("payload", {})
+            if payload.get("type") == "message" and payload.get("role") == "assistant":
+                parsed = _extract_codex_text_content(payload.get("content", []))
+                if parsed:
+                    last_msg = parsed
+
+        # Format C (newer Codex JSON stream):
+        # {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+        if event.get("type") == "item.completed":
+            item = event.get("item", {})
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    last_msg = text.strip()
+    return last_msg
+
+
+def _parse_summary_json(text):
+    """Parse summary JSON with tolerance for extra content."""
+    candidate = _extract_first_json_object(text)
+    data = json.loads(candidate)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("summary is not a JSON object", candidate, 0)
+    task = data.get("task")
+    progress = data.get("progress")
+    percent = data.get("percent")
+    if not isinstance(task, str):
+        task = ""
+    if progress is not None and not isinstance(progress, str):
+        progress = str(progress)
+    if percent is not None:
+        try:
+            percent = max(0, min(100, int(percent)))
+        except (ValueError, TypeError):
+            percent = None
+    return {"task": task, "progress": progress, "percent": percent}
+
+
+def _fallback_summary(session):
+    """Best-effort local summary when external CLI summarization fails."""
+    excerpt = session.get("conversationExcerpt", []) or []
+    task = (session.get("taskSummary") or "").strip()
+    if not task:
+        for m in excerpt:
+            if m.get("role") == "user" and m.get("text"):
+                task = m["text"].strip()
+                break
+    if not task:
+        task = "Session is active"
+
+    progress = ""
+    for m in reversed(excerpt):
+        if m.get("role") == "assistant" and m.get("text"):
+            progress = m["text"].strip()
+            break
+    if not progress and excerpt:
+        progress = excerpt[-1].get("text", "").strip()
+    if not progress:
+        progress = "No recent progress message available"
+
+    return {
+        "task": task[:180],
+        "progress": progress[:220],
+        "percent": None,
+    }
+
+
+def _summary_cache_key(session):
+    return f"{session.get('provider', 'claude')}:{session.get('server', 'local')}:{session.get('sessionId', '')}"
 
 
 _summarize_executor = ThreadPoolExecutor(max_workers=3)
@@ -783,7 +1267,7 @@ def _summarize_all(sessions):
     for s in sessions:
         if "error" in s:
             continue
-        sid = s.get("sessionId", "")
+        sid = _summary_cache_key(s)
         mc = s.get("messageCount", 0)
 
         with _summary_cache["lock"]:
@@ -798,9 +1282,10 @@ def _summarize_all(sessions):
             if sid not in _summarize_in_flight and mc > 0:
                 _summarize_in_flight.add(sid)
                 session_data = {
-                    "sessionId": sid,
+                    "sessionId": s.get("sessionId", sid),
                     "cwd": s.get("cwd", ""),
                     "alive": s.get("alive", False),
+                    "provider": s.get("provider", "claude"),
                     "conversationExcerpt": s.get("conversationExcerpt", []),
                 }
                 fut = _summarize_executor.submit(_summarize_session, session_data)
@@ -868,14 +1353,14 @@ def api_session_dismiss(session_id):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Claude Code Agent Kanban")
+    parser = argparse.ArgumentParser(description="Code Agent Kanban")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", "-p", type=int, default=5555, help="Bind port (default: 5555)")
     args = parser.parse_args()
 
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
     _load_summary_cache()
-    print(f"Claude Code Agent Kanban running at http://localhost:{args.port}")
+    print(f"Code Agent Kanban running at http://localhost:{args.port}")
     app.run(host=args.host, port=args.port)
 
 

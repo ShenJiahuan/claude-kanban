@@ -1,8 +1,8 @@
-# Claude Code Agent Kanban
+# Code Agent Kanban
 
-A real-time web dashboard that monitors [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions across multiple servers, displaying them as a kanban board with AI-powered task summaries.
+A real-time web dashboard that monitors AI coding sessions across multiple servers (currently supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and Codex), displaying them as a kanban board with AI-powered task summaries.
 
-If you run Claude Code on multiple machines simultaneously, it's easy to lose track of what each agent is doing. This tool SSHs into your servers, collects all active sessions, and presents them in a single unified view.
+If you run coding agents on multiple machines simultaneously, it's easy to lose track of what each agent is doing. This tool SSHs into your servers, collects sessions, and presents them in a single unified view.
 
 ![Claude Code Agent Kanban Screenshot](screenshot.png)
 
@@ -10,7 +10,8 @@ If you run Claude Code on multiple machines simultaneously, it's easy to lose tr
 
 - **Multi-server monitoring** — SSH into remote servers to collect session data in parallel
 - **Live kanban board** — Sessions organized into Running / Completed / Errors columns
-- **AI-powered summaries** — Each session is summarized by Claude (via local `claude` CLI) with task description, progress status, and estimated completion percentage
+- **Multi-provider support** — Switch between `claude` and `codex` providers from Settings
+- **AI-powered summaries** — Sessions are summarized by local CLI (`claude` or `codex`) with task description, progress status, and estimated completion percentage
 - **Auto-refresh** — Dashboard updates automatically; fast-polls on first load to pick up AI summaries quickly
 - **Session lifecycle tracking** — Sessions move from Running to Completed when the Claude Code process exits; resumed sessions move back to Running
 - **Web-based configuration** — Add/edit/remove SSH servers and test connections from the Settings panel, no config files needed
@@ -20,7 +21,8 @@ If you run Claude Code on multiple machines simultaneously, it's easy to lose tr
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed (used for AI summaries via `claude -p`)
+- For `claude` provider: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed
+- For `codex` provider: Codex CLI installed (`codex`)
 - SSH key-based access to remote servers (for multi-server monitoring)
 
 ## Quick Start
@@ -48,14 +50,14 @@ uv run claude-kanban
 
 Open http://localhost:5555 in your browser.
 
-By default, it scans the local machine for Claude Code sessions. To add remote servers, click **Settings** in the top-right corner.
+By default, it scans the local machine for Claude Code sessions. You can switch provider to Codex in **Settings**.
 
 ## How It Works
 
-1. **Session discovery** — Scans `~/.claude/sessions/*.json` on each server to find active Claude Code processes
-2. **Conversation parsing** — Reads the corresponding JSONL conversation logs from `~/.claude/projects/` to extract message history
-3. **AI summarization** — Sends conversation excerpts (first 3 + last 6 messages) to `claude -p --model haiku` for summarization
-4. **Lifecycle tracking** — When a session's PID disappears, it moves to the Completed column. If resumed, it moves back to Running
+1. **Session discovery** — Scans provider-specific session logs (`~/.claude/...` or `~/.codex/...`) on each server
+2. **Conversation parsing** — Extracts first task messages and latest progress messages from JSONL logs
+3. **AI summarization** — Sends conversation excerpts (first 3 + last 6 messages) to local CLI (`claude -p` or `codex exec`)
+4. **Lifecycle tracking** — Sessions move between Running and Completed based on activity/process state
 
 ## Configuration
 
@@ -63,6 +65,7 @@ All configuration is done through the web UI (**Settings** button). Under the ho
 
 ```yaml
 include_local: true
+provider: claude  # claude | codex
 servers:
   - host: gpu-server-1.example.com
     user: ubuntu
@@ -87,7 +90,8 @@ servers:
 ### Remote server requirements
 
 - Python 3 installed
-- Claude Code installed (sessions stored in `~/.claude/`)
+- For `claude` provider: Claude Code installed (sessions stored in `~/.claude/`)
+- For `codex` provider: Codex installed (sessions stored in `~/.codex/`)
 - SSH key-based authentication configured
 
 ### Environment variables
@@ -109,6 +113,7 @@ servers:
 | `DELETE /api/servers/<id>`       | DELETE | Remove a server                      |
 | `POST /api/servers/<id>/test`    | POST   | Test SSH connection                  |
 | `PUT /api/config/local`          | PUT    | Toggle local machine scanning        |
+| `PUT /api/config/provider`       | PUT    | Set provider (`claude` / `codex`)    |
 
 ## License
 
